@@ -1,0 +1,82 @@
+networks:
+  stocksense-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  market_data_store:
+    driver: local
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: stocksense-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-stocksense}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-stocksense}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - stocksense-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: stocksense-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - stocksense-net
+
+  market-data-service:
+    build:
+      context: ../Stock_Sense_Backend
+      dockerfile: services/market-data-service/Dockerfile
+    container_name: stocksense-market-data-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-stocksense}
+      REDIS_URL: redis://redis:6379/0
+      EXCHANGE_ID: ${EXCHANGE_ID:-binance}
+      DATA_STORE_DIR: ${DATA_STORE_DIR:-/app/data_store}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-secret-key-12345}
+      DEFAULT_SYMBOLS: ${DEFAULT_SYMBOLS:-BTC/USDT,ETH/USDT}
+      DEFAULT_TIMEFRAMES: ${DEFAULT_TIMEFRAMES:-1h,1d,15m,4h}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENABLE_SCHEDULER: ${ENABLE_SCHEDULER:-true}
+    ports:
+      - "${MARKET_DATA_SERVICE_PORT:-8001}:8001"
+    volumes:
+      - market_data_store:/app/data_store
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8001/v1/health\")'"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - stocksense-net
